@@ -18,7 +18,12 @@
   - probably build to sync with SimpleCalendar https://github.com/SimpleMobileTools/Simple-Calendar
     - OR maybe https://github.com/FossifyOrg/Calendar?
     - (ProtonCalendar doesn't have an API)
-  - SLM (Small Language Model) integration 
+
+  - send notifications with https://github.com/hoodie/notify-rust
+    - would require a daemon of some kind... annoying to setup / install
+      - https://docs.rs/daemonize/latest/daemonize/
+    - maybe not, def optional, not super interested personally I think
+  - HLM (Heuristic Language Model) integration 
     "tcal sports team general meeting 5pm next friday" 
        - get llamda to get determine the date based on the current date and the
          text
@@ -26,10 +31,6 @@
        - calendar color / which calendar to add it to (or default calendar)
        - determine location and time
        - determine other guests and email them invites (optional) 
-  - send notifications with https://github.com/hoodie/notify-rust
-    - would require a daemon of some kind... annoying to setup / install
-      - https://docs.rs/daemonize/latest/daemonize/
-    - maybe not, def optional, not super interested personally I think
 
 - Heuristic Language Model (HLM)
    - a library AND a binary
@@ -45,6 +46,15 @@
         - each hlm file will have success rates and failures baked in
      - list hlm files by success rate
    - based purely on heuristics in rust
+
+Generate 10 example requests of how a variety of different people might request
+an entry to be added to their own personal calendar. Respond in a json array. For
+example: 
+[
+"sports team general meeting 5pm next friday",
+....
+]
+
       - each match could be in the form: 
       - "[phrase] [time] [date]" could match "sports team general meeting 5pm next friday"
       - "add to my [name] calendar: [phase] on [date] at [name]" 
