@@ -10,16 +10,16 @@ use {
     serde::Deserialize,
     std::cmp::PartialEq,
     std::fmt::Debug,
-    time::UtcDateTime,
-    //serde_json::json,
-    time::{Date, Duration, Month, OffsetDateTime, Time, UtcOffset, Weekday as TimeWeekday},
+    time::{
+        Date, Duration, Month, OffsetDateTime, Time as TimeTime, UtcOffset, Weekday as TimeWeekday,
+    },
 };
 
 #[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
-pub struct Time24Hr {
-    #[schemars(regex(pattern = r"^(?:[0-9]|1[0-9]|2[0-3])$"))]
+pub struct TwentyFourHrTime {
+    //#[schemars(regex(pattern = r"^(?:[0-9]|1[0-9]|2[0-3])$"))]
     pub hour: u8,
-    #[schemars(regex(pattern = r"^(?:[0-9]|[0-5][0-9])$"))]
+    //#[schemars(regex(pattern = r"^(?:[0-9]|[0-5][0-9])$"))]
     pub minute: u8,
 }
 
@@ -30,19 +30,27 @@ pub enum AmPm {
 }
 
 #[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
-pub struct TimeAmPm {
-    #[schemars(regex(pattern = r"^(?:[0-9]|1[0-2])$"))]
+pub struct TwelveHourTime {
+    //#[schemars(regex(pattern = r"^(?:[0-9]|1[0-2])$"))]
     pub hour: u8,
-    #[schemars(regex(pattern = r"^(?:0[0-9]|[0-5][0-9])$"))]
+    //#[schemars(regex(pattern = r"^(?:0[0-9]|[0-5][0-9])$"))]
     pub minute: u8,
     pub am_pm: AmPm,
 }
 
-#[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
-pub enum CalTime {
+#[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone, Default)]
+pub enum IsTimeProvided {
+    #[default]
+    No,
+    Yes(Time),
+}
+
+#[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone, Default)]
+pub enum Time {
+    #[default]
     Unspecified,
-    TimeWith24Hr(Time24Hr),
-    TimeWithAmPm(TimeAmPm),
+    TwelveHourTime(TwelveHourTime),
+    TwentyFourHrTime(TwentyFourHrTime),
 }
 
 #[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
@@ -58,7 +66,7 @@ pub struct CalDate {
 impl CalDate {
     pub fn to_date(&self) -> Date {
         let month = Month::January.nth_next(self.month - 1);
-        Date::from_calendar_date(self.year as i32, month, self.day as u8).unwrap()
+        Date::from_calendar_date(self.year as i32, month, self.day).unwrap()
     }
 }
 
@@ -96,7 +104,7 @@ impl From<&Weekday> for TimeWeekday {
 }
 
 #[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
-enum When {
+pub enum When {
     NextWeek(Weekday),
     ThisWeek(Weekday),
     InExactDays(i64),
@@ -171,7 +179,7 @@ struct Namer {
 //    location: String,
 //}
 #[derive(JsonSchema, Deserialize, Debug, Default, PartialEq, Eq, Clone)]
-enum Location {
+pub enum Location {
     #[default]
     None,
     Location(String),
@@ -198,6 +206,53 @@ impl Location {
 #[derive(JsonSchema, Deserialize, Debug, Default, PartialEq, Eq, Clone)]
 pub struct Names {
     names: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CalendarEntry {
+    pub name: String,
+    pub details: String,
+    pub location: Location,
+    pub attendees: Names,
+    pub start: EntryDateTime,
+    pub end: Option<EntryDateTime>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct EntryDateTime {
+    pub date: Date,
+    pub time: Option<TimeTime>,
+    pub timezone: UtcOffset,
+}
+
+impl From<When> for EntryDateTime {
+    fn from(when: When) -> Self {
+        let (date, timezone) = when.get_date();
+        Self {
+            date,
+            time: None,
+            timezone,
+        }
+    }
+}
+
+impl CalendarEntry {
+    pub fn new(
+        name: String,
+        location: Location,
+        attendees: Names,
+        start: EntryDateTime,
+        end: Option<EntryDateTime>,
+    ) -> Self {
+        Self {
+            name,
+            details: "".to_string(),
+            location,
+            attendees,
+            start,
+            end,
+        }
+    }
 }
 
 #[tokio::main]
@@ -247,7 +302,16 @@ Respond only in JSON.
     );
     dbg!(&chooser_prompt);
 
-    let _when = process::<When>(&ollama, &model, &sys_prompt, &chooser_prompt, true).await?;
+    let when = process::<When>(&ollama, &model, &sys_prompt, &chooser_prompt, true).await?;
+
+    let chooser_prompt = format!(
+        "Given the event: \"{user_prompt}\", ignore the date. does the event explicitly specify a \
+        time? If so, what is the actual time (not the date!) of the event? If no time is provided \
+        respond with \"Unspecified\". **IMPORTANT** do not guess the time, if no time is provided, \
+        respond with \"Unspecified\". Respond only in JSON."
+    );
+    dbg!(&chooser_prompt);
+    let _ev_time = process::<Time>(&ollama, &model, &sys_prompt, &chooser_prompt, true).await?;
 
     let chooser_prompt = format!(
         "The user has just made a prompt to create an event: \"{user_prompt}\", Given the user's \
@@ -255,7 +319,7 @@ Respond only in JSON.
         name. ONLY USE words used by the user prompt. Respond only in JSON."
     );
     dbg!(&chooser_prompt);
-    let _namer = process::<Namer>(&ollama, &model, &sys_prompt, &chooser_prompt, true).await?;
+    let namer = process::<Namer>(&ollama, &model, &sys_prompt, &chooser_prompt, true).await?;
 
     //let chooser_prompt = format!(
     //    "Given the event details: \"{user_prompt}\", where is the location of the event? If the \
@@ -277,7 +341,10 @@ Respond only in JSON.
         specified respond with []. Respond only in JSON."
     );
     dbg!(&chooser_prompt);
-    let _where = process::<Names>(&ollama, &model, &sys_prompt, &chooser_prompt, true).await?;
+    let names = process::<Names>(&ollama, &model, &sys_prompt, &chooser_prompt, true).await?;
+
+    let ce = CalendarEntry::new(namer.event_name, location, names, when.into(), None);
+    dbg!(&ce);
 
     Ok(())
 }
@@ -329,13 +396,6 @@ async fn process<S: Clone + Default + Debug + PartialEq + for<'a> Deserialize<'a
     Ok(final_resp)
 }
 
-//#[derive(JsonSchema, Deserialize, Debug)]
-#[derive(Debug)]
-pub struct CalendarEntry {
-    pub datetime: UtcDateTime,
-    pub entry: String,
-}
-
 pub fn basic_improve_user_prompt(mut user_prompt: String) -> String {
     let day_week_prefix = vec![
         "mon", "tue", "wed", "thu", "fri", "sat", "sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat",
@@ -349,59 +409,3 @@ pub fn basic_improve_user_prompt(mut user_prompt: String) -> String {
     }
     user_prompt
 }
-
-//fn add_to_calendar_abs(a: AddToCalendarAbsolute) {
-//    dbg!(a);
-//}
-
-// add to calendar relative
-
-//fn add_to_calendar_rel(a: AddToCalendarRelative) {
-//    let mut dt = UtcDateTime::now();
-
-//match (a.in_days, a.in_weeks) {
-//    (Some(days), Some(weeks)) => {
-//        // for silly llm mistakes where is provides both in_days and in_weeks
-//        if weeks * 7 == days {
-//            dt = dt.checked_add(Duration::days(days)).unwrap();
-//        }
-//    }
-//    (Some(days), None) => {
-//        dt = dt.checked_add(Duration::days(days)).unwrap();
-//    }
-//    (None, Some(weeks)) => {
-//        dt = dt.checked_add(Duration::weeks(weeks)).unwrap();
-//    }
-//    (None, None) => {}
-//}
-
-// correct the day if necessary
-//if let Some(on_day) = a.on_day {
-//    if let Ok(on_day) = Weekday::from_str(&on_day) {
-//        let existing_day = dt.weekday();
-//        if existing_day != on_day {
-//            let days_to_add = on_day.number_days_from_sunday() as i8
-//                - existing_day.number_days_from_sunday() as i8;
-//            dt = dt.checked_add(Duration::days(days_to_add as i64)).unwrap();
-//        }
-//    }
-//    if on_day == "Tomorrow" {
-//        dt = UtcDateTime::now();
-//        dt = dt.checked_add(Duration::days(1)).unwrap();
-//    }
-//    println!("ON_DAY: {on_day}");
-//}
-
-// parse the time from the user input
-//let format = format_description!("[hour]:[minute]");
-//let dt = if let Ok(time_) = Time::parse(a.time, &format) {
-//    // replace the time with the parsed time
-//    dt.replace_time(time_)
-//} else {
-//    dt
-//};
-
-//    let date_format = format_description!("[year]-[month]-[day]");
-//    let entry_info = json!(dt.format(date_format).unwrap());
-//    dbg!(&entry_info);
-//}
