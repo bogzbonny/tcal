@@ -1,3 +1,7 @@
+TROUBLE PROMPTS:
+ - lunar eclipse this sun
+    - seems to be fine with if I use "Sun" or even "sund"
+
 - TUI Calendar 
   - MINI TUI Overview
      - basically the notifications window but with some intractability
@@ -18,6 +22,7 @@
   - probably build to sync with SimpleCalendar https://github.com/SimpleMobileTools/Simple-Calendar
     - OR maybe https://github.com/FossifyOrg/Calendar?
     - (ProtonCalendar doesn't have an API)
+    - would need to run a CalDav server? https://github.com/jelmer/xandikos
 
   - send notifications with https://github.com/hoodie/notify-rust
     - would require a daemon of some kind... annoying to setup / install
@@ -48,11 +53,12 @@
    - based purely on heuristics in rust
 
 Generate 10 example requests of how a variety of different people might request
-an entry to be added to their own personal calendar. Respond in a json array. For
-example: 
+an entry to be added to their own personal calendar. Use a variety of different
+styles to simulate how different people might input the request. Respond ONLY
+with a json array. For example: 
 [
-"sports team general meeting 5pm next friday",
-....
+"sports team general meeting 6pm next friday",
+...
 ]
 
       - each match could be in the form: 

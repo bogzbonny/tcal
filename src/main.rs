@@ -1,19 +1,333 @@
 use {
-    async_openai::{
-        config::OpenAIConfig,
-        types::{
-            ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessageArgs,
-            ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
-            ChatCompletionRequestToolMessageArgs, ChatCompletionRequestUserMessageArgs,
-            ChatCompletionToolArgs, ChatCompletionToolType, CreateChatCompletionRequestArgs,
-            FunctionObjectArgs,
+    ollama_rs::{
+        generation::{
+            completion::request::GenerationRequest,
+            parameters::{FormatType, JsonSchema, JsonStructure},
         },
-        Client,
+        models::ModelOptions,
+        Ollama,
     },
-    serde_json::{json, Value},
-    std::collections::HashMap,
-    time::{macros::format_description, Duration, Time, UtcDateTime, Weekday},
+    serde::Deserialize,
+    std::cmp::PartialEq,
+    std::fmt::Debug,
+    time::UtcDateTime,
+    //serde_json::json,
+    time::{Date, Duration, Month, OffsetDateTime, Time, UtcOffset, Weekday as TimeWeekday},
 };
+
+#[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct Time24Hr {
+    #[schemars(regex(pattern = r"^(?:[0-9]|1[0-9]|2[0-3])$"))]
+    pub hour: u8,
+    #[schemars(regex(pattern = r"^(?:[0-9]|[0-5][0-9])$"))]
+    pub minute: u8,
+}
+
+#[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub enum AmPm {
+    Am,
+    Pm,
+}
+
+#[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct TimeAmPm {
+    #[schemars(regex(pattern = r"^(?:[0-9]|1[0-2])$"))]
+    pub hour: u8,
+    #[schemars(regex(pattern = r"^(?:0[0-9]|[0-5][0-9])$"))]
+    pub minute: u8,
+    pub am_pm: AmPm,
+}
+
+#[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub enum CalTime {
+    Unspecified,
+    TimeWith24Hr(Time24Hr),
+    TimeWithAmPm(TimeAmPm),
+}
+
+#[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct CalDate {
+    #[schemars(regex(pattern = r"^\d{4}$"))]
+    pub year: u16,
+    #[schemars(regex(pattern = r"^(?:0[1-9]|1[0-2])$"))]
+    pub month: u8,
+    #[schemars(regex(pattern = r"^(?:0?[1-9]|[12][0-9]|3[01])$"))]
+    pub day: u8,
+}
+
+impl CalDate {
+    pub fn to_date(&self) -> Date {
+        let month = Month::January.nth_next(self.month - 1);
+        Date::from_calendar_date(self.year as i32, month, self.day as u8).unwrap()
+    }
+}
+
+#[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub struct MonthDay {
+    #[schemars(regex(pattern = r"^(?:0[1-9]|1[0-2])$"))]
+    pub month: u8,
+    #[schemars(regex(pattern = r"^(?:0?[1-9]|[12][0-9]|3[01])$"))]
+    pub day: u8,
+}
+
+#[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
+pub enum Weekday {
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+    Sunday,
+}
+
+impl From<&Weekday> for TimeWeekday {
+    fn from(weekday: &Weekday) -> Self {
+        match weekday {
+            Weekday::Monday => TimeWeekday::Monday,
+            Weekday::Tuesday => TimeWeekday::Tuesday,
+            Weekday::Wednesday => TimeWeekday::Wednesday,
+            Weekday::Thursday => TimeWeekday::Thursday,
+            Weekday::Friday => TimeWeekday::Friday,
+            Weekday::Saturday => TimeWeekday::Saturday,
+            Weekday::Sunday => TimeWeekday::Sunday,
+        }
+    }
+}
+
+#[derive(JsonSchema, Deserialize, Debug, PartialEq, Eq, Clone)]
+enum When {
+    NextWeek(Weekday),
+    ThisWeek(Weekday),
+    InExactDays(i64),
+    MonthDay(MonthDay),
+    AbsoluteDate(CalDate),
+}
+
+impl When {
+    /// Gets the date relative to now given `When` information
+    /// Returns the date without the time component and the current local offset.
+    pub fn get_date(&self) -> (Date, UtcOffset) {
+        // Current local date and offset
+        let now = OffsetDateTime::now_local().expect("Unable to get local time");
+        let offset = now.offset();
+        let today = now.date();
+
+        let target_date = match self {
+            When::NextWeek(weekday) => {
+                // Days until next occurrence of the specified weekday
+                let weekday: TimeWeekday = weekday.into();
+                let weekday_num = weekday.number_from_monday() as i64;
+                let now_weekday_num = now.weekday().number_from_monday() as i64;
+                let mut diff = (weekday_num - now_weekday_num + 7) % 7;
+                if diff == 0 {
+                    diff = 7; // Ensure "next" means at least a week ahead
+                }
+                today + Duration::days(diff)
+            }
+            When::ThisWeek(weekday) => {
+                // Days relative to this week's specified weekday
+                let weekday: TimeWeekday = weekday.into();
+                let weekday_num = weekday.number_from_monday() as i64;
+                let now_weekday_num = now.weekday().number_from_monday() as i64;
+                let diff = weekday_num - now_weekday_num;
+                today + Duration::days(diff)
+            }
+            When::InExactDays(days) => {
+                // Add or subtract the given number of days
+                today + Duration::days(*days)
+            }
+            When::MonthDay(md) => {
+                // Resolve month/day within the current year or next year
+                let year = today.year();
+                let month = Month::January.nth_next(md.month - 1);
+                let mut date = Date::from_calendar_date(year, month, md.day)
+                    .expect("Invalid month/day combination");
+                if date < today {
+                    date = Date::from_calendar_date(year + 1, month, md.day)
+                        .expect("Invalid month/day combination");
+                }
+                date
+            }
+            When::AbsoluteDate(cal) => cal.to_date(),
+        };
+
+        (target_date, offset)
+    }
+}
+
+impl Default for When {
+    fn default() -> Self {
+        Self::InExactDays(0)
+    }
+}
+
+#[derive(JsonSchema, Deserialize, Debug, Default, PartialEq, Eq, Clone)]
+struct Namer {
+    event_name: String,
+}
+
+//pub struct Location {
+//    location: String,
+//}
+#[derive(JsonSchema, Deserialize, Debug, Default, PartialEq, Eq, Clone)]
+enum Location {
+    #[default]
+    None,
+    Location(String),
+}
+
+impl Location {
+    fn cleanup(&mut self) {
+        match &self {
+            Location::Location(s)
+                if s == "Unknown"
+                    || s == "unknown"
+                    || s == "None"
+                    || s == "none"
+                    || s == "Not Specified"
+                    || s == "not specified" =>
+            {
+                *self = Location::None;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(JsonSchema, Deserialize, Debug, Default, PartialEq, Eq, Clone)]
+pub struct Names {
+    names: Vec<String>,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let ollama = Ollama::default();
+    //let model = "llama3.2:latest".to_string();
+    //let model = "phi3.5".to_string();
+    //let model = "deepseek-r1:8b".to_string();
+    //let model = "gpt-oss:20b".to_string();
+    //let model = "qwen3:1.7b".to_string(); // too small!
+    //let model = "qwen3:4b".to_string();
+    let model = "qwen3:8b".to_string();
+
+    // compile all the arguments into a single string
+    let mut input: Vec<String> = std::env::args().collect();
+    // remove the first argument (the path to the binary)
+    input.remove(0);
+    let user_prompt = input.join(" ");
+    let user_prompt = basic_improve_user_prompt(user_prompt);
+    println!("user_prompt: {}", &user_prompt);
+
+    //let now = UtcDateTime::now();
+    //let weekday_format = format_description!("[weekday]");
+    //let date_format = format_description!("[year]-[month]-[day]");
+    //let date = now.format(date_format).unwrap().to_string();
+    //let weekday = now.format(weekday_format).unwrap().to_string();
+    let sys_prompt = "You are a calendar assistant".to_string();
+
+    let chooser_prompt = format!(
+        "The user has just made a prompt to create an event: \"{user_prompt}\", Given the user's \
+prompt, call one of the following functions: 
+- NextWeek
+  - Call this if the user has said \"next week\", \"next monday\", etc.
+- ThisWeek
+  - Call this if the user has said \"this week\", \"this monday\", etc.
+- InExactDays
+  - Call this if the user has said \"in 2 days\", \"in 5 days\", \"tomorrow\", \"today\", etc. 
+    DO NOT call this if the user has said \"next week\", \"this week\", etc.
+- MonthDay
+  - Call this if the user has explicitly provided a month and day for the event.
+- AbsoluteDate
+  - Add a new entry to the calendar using absolute date and time. DO NOT call this if \
+    the user has provided a relative date information. ONLY EVER call this if \
+    the user has provided a month and day and a year. 
+Respond only in JSON.
+        "
+    );
+    dbg!(&chooser_prompt);
+
+    let _when = process::<When>(&ollama, &model, &sys_prompt, &chooser_prompt, true).await?;
+
+    let chooser_prompt = format!(
+        "The user has just made a prompt to create an event: \"{user_prompt}\", Given the user's \
+        prompt, what is the name of the event? DO NOT include the date or time information in the \
+        name. ONLY USE words used by the user prompt. Respond only in JSON."
+    );
+    dbg!(&chooser_prompt);
+    let _namer = process::<Namer>(&ollama, &model, &sys_prompt, &chooser_prompt, true).await?;
+
+    //let chooser_prompt = format!(
+    //    "Given the event details: \"{user_prompt}\", where is the location of the event? If the \
+    //    event says \"go to X\" or \"at X\" then X is the location. If no location is specified \
+    //    respond with \"Unknown\". Respond only in JSON."
+    //);
+    let chooser_prompt = format!(
+        "Given the event details: \"{user_prompt}\", where is the location of the event? If the \
+        event says \"go to X\" or \"at X\" then X is the location. Respond only in JSON."
+    );
+    dbg!(&chooser_prompt);
+    let mut location =
+        process::<Location>(&ollama, &model, &sys_prompt, &chooser_prompt, true).await?;
+    location.cleanup();
+    println!("final loc: {:?}", location);
+
+    let chooser_prompt = format!(
+        "Given the event details: \"{user_prompt}\", who is attending the event? If no people are \
+        specified respond with []. Respond only in JSON."
+    );
+    dbg!(&chooser_prompt);
+    let _where = process::<Names>(&ollama, &model, &sys_prompt, &chooser_prompt, true).await?;
+
+    Ok(())
+}
+
+async fn process<S: Clone + Default + Debug + PartialEq + for<'a> Deserialize<'a> + JsonSchema>(
+    o: &Ollama,
+    model: &str,
+    sys_prompt: &str,
+    chooser_prompt: &str,
+    verbose: bool,
+) -> Result<S, Box<dyn std::error::Error>> {
+    let mut final_resp: S = S::default();
+    let mut accumulated_resp: Vec<(S, u8)> = Vec::new();
+    'OUTER: for _ in 0..=20 {
+        let format = FormatType::StructuredJson(Box::new(JsonStructure::new::<S>()));
+        let res = {
+            o.generate(
+                GenerationRequest::new(model.to_string(), chooser_prompt)
+                    .system(sys_prompt)
+                    .format(format)
+                    .think(true)
+                    .options(ModelOptions::default().temperature(1.0)),
+            )
+            .await?
+        };
+        let resp: S = serde_json::from_str(&res.response)?;
+        if verbose {
+            dbg!(&resp);
+        }
+        // add the response to the accumulated response, and increment the count
+        let mut found = false;
+        for (r, c) in accumulated_resp.iter_mut() {
+            if r == &resp {
+                found = true;
+                *c += 1;
+                if *c >= 3 {
+                    final_resp = resp.clone();
+                    break 'OUTER;
+                }
+            }
+        }
+        if !found {
+            accumulated_resp.push((resp.clone(), 1));
+        }
+    }
+    if verbose {
+        println!("final resp: {:?}", final_resp);
+    }
+    Ok(final_resp)
+}
 
 //#[derive(JsonSchema, Deserialize, Debug)]
 #[derive(Debug)]
@@ -36,403 +350,58 @@ pub fn basic_improve_user_prompt(mut user_prompt: String) -> String {
     user_prompt
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    //let client = Client::new();
-
-    // compile all the arguments into a single string
-    let mut input: Vec<String> = std::env::args().collect();
-    // remove the first argument (the path to the binary)
-    input.remove(0);
-    let user_prompt = input.join(" ");
-    let user_prompt = basic_improve_user_prompt(user_prompt);
-    println!("user_prompt: {}", &user_prompt);
-
-    let now = UtcDateTime::now();
-    let weekday_format = format_description!("[weekday]");
-    let date_format = format_description!("[year]-[month]-[day]");
-    let date = now.format(date_format).unwrap().to_string();
-    let weekday = now.format(weekday_format).unwrap().to_string();
-
-    let api_base = "http://localhost:11434/v1";
-    let api_key = "ollama";
-
-    let client = Client::with_config(
-        OpenAIConfig::new()
-            .with_api_key(api_key)
-            .with_api_base(api_base),
-    );
-
-    // This should match whatever model is downloaded in Ollama docker container.
-
-    //let model = "llama3.2:1b";
-    //let model = "qwen3:8b";
-    //let model = "smollm2:1.7b";
-    //let model = "phi4-mini:latest";
-    let model = "llama3.2:latest"; // <--- the best model so far
-
-    let system_prompt =
-        format!("You are a calendar assistant. Today's date is {date}, which is a {weekday}.",);
-
-    let request = CreateChatCompletionRequestArgs::default()
-        .max_tokens(512u32)
-        .model(model)
-        .temperature(1.0)
-        .messages([
-            ChatCompletionRequestSystemMessageArgs::default().content(system_prompt).build()?.into(),
-            ChatCompletionRequestUserMessageArgs::default()
-            .content(user_prompt.clone())
-            .build()?
-            .into()])
-        .tools(vec![ChatCompletionToolArgs::default()
-            .r#type(ChatCompletionToolType::Function)
-            .function(
-                FunctionObjectArgs::default()
-                    .name("add_to_calendar_absolute")
-                    .description("Add a new entry to the calendar using absolute date and time")
-                    .parameters(json!({
-                        "type": "object",
-                        "properties": {
-                            "date": {
-                                "type": "string",
-                                "description": "The date of the entry in the format YYYY-MM-DD",
-                            },
-                            "time": {
-                                "type": "string",
-                                "description": "The 24 hour time of the entry in the format HH:MM",
-                            },
-                            "entry": {
-                                "type": "string",
-                                "description": "The entry to add to the calendar",
-                            },
-                        },
-                        "required": ["date", "time", "entry"],
-                    }))
-                    .build()?,
-            )
-            .function(
-                FunctionObjectArgs::default()
-                    .name("add_to_calendar_relative")
-                    .description("Add a new entry to the calendar using relative date, all days and weeks will be added together")
-                    .parameters(json!({
-                        "type": "object",
-                        "properties": {
-                            "in_days": {
-                                "type": "integer",
-                                "description": "The number of days in the future when the event occurs",
-                            },
-                            "in_weeks": {
-                                "type": "integer",
-                                "description": "The number of weeks in the future when the event occurs",
-                            },
-                            "on_day": {
-                                "type": "string",
-                                "description": "The day of the week when the event occurs, or \"tomorrow\" to add the event to the next day",
-                            },
-                            "time": {
-                                "type": "string",
-                                "description": "The 24 hour time of the entry in the format HH:MM",
-                            },
-                            "entry": {
-                                "type": "string",
-                                "description": "The entry to add to the calendar",
-                            },
-                        },
-                        "required": ["time", "entry"],
-                    }))
-                    .build()?,
-            )
-            .build()?])
-        .build()?;
-
-    let mut tool_event_date_list: Vec<String> = vec![];
-
-    for _ in 0..=5 {
-        let response_message = client
-            .chat()
-            .create(request.clone())
-            .await?
-            .choices
-            .first()
-            .unwrap()
-            .message
-            .clone();
-
-        println!("Response: {response_message:?}\n");
-
-        if let Some(tool_calls) = response_message.tool_calls {
-            let mut handles = Vec::new();
-            for tool_call in tool_calls {
-                let name = tool_call.function.name.clone();
-                let args = tool_call.function.arguments.clone();
-                let tool_call_clone = tool_call.clone();
-
-                let handle =
-                    tokio::spawn(async move { call_fn(&name, &args).await.unwrap_or_default() });
-                handles.push((handle, tool_call_clone));
-            }
-
-            let mut function_responses = Vec::new();
-
-            for (handle, tool_call_clone) in handles {
-                if let Ok(response_content) = handle.await {
-                    function_responses.push((tool_call_clone, response_content));
-                }
-            }
-
-            let mut messages: Vec<ChatCompletionRequestMessage> =
-                vec![ChatCompletionRequestUserMessageArgs::default()
-                    .content(user_prompt.clone())
-                    .build()?
-                    .into()];
-
-            let tool_calls: Vec<ChatCompletionMessageToolCall> = function_responses
-                .iter()
-                .map(|(tool_call, _response_content)| tool_call.clone())
-                .collect();
-
-            let assistant_messages: ChatCompletionRequestMessage =
-                ChatCompletionRequestAssistantMessageArgs::default()
-                    .tool_calls(tool_calls)
-                    .build()?
-                    .into();
-
-            let tool_messages: Vec<ChatCompletionRequestMessage> = function_responses
-                .iter()
-                .map(|(tool_call, response_content)| {
-                    tool_event_date_list.push(response_content.to_string());
-                    ChatCompletionRequestToolMessageArgs::default()
-                        .content(response_content.to_string())
-                        .tool_call_id(tool_call.id.clone())
-                        .build()
-                        .unwrap()
-                        .into()
-                })
-                .collect();
-
-            messages.push(assistant_messages);
-            messages.extend(tool_messages);
-        }
-    }
-    println!("events: {tool_event_date_list:?}");
-
-    //let mut verifications: Vec<String> = vec![];
-
-    //for tool_event_date in tool_event_date_list {
-    //    let verify_user_prompt = format!(
-    //    "The user has just made a prompt to create an event: \"{user_prompt}\", Given that \
-    //    today's date is {date}, which is a {weekday}. Does this event take place on {tool_event_date}? \
-    //    Respond ONLY with TRUE or FALSE");
-
-    //    //println!("verify_user_prompt: {}", &verify_user_prompt);
-    //    let request = CreateChatCompletionRequestArgs::default()
-    //        .max_tokens(512u32)
-    //        .model(model)
-    //        .temperature(1.0)
-    //        .messages([ChatCompletionRequestUserMessageArgs::default()
-    //            .content(verify_user_prompt.clone())
-    //            .build()?
-    //            .into()])
-    //        .build()?;
-
-    //    let response_message = client
-    //        .chat()
-    //        .create(request)
-    //        .await?
-    //        .choices
-    //        .first()
-    //        .unwrap()
-    //        .message
-    //        .clone();
-
-    //    //println!(
-    //    //    "verify_user_prompt Response: {}",
-    //    //    response_message.content.unwrap()
-    //    //);
-    //    verifications.push(response_message.content.unwrap());
-    //}
-    //println!("verifications: {verifications:?}");
-
-    Ok(())
-}
-
-async fn call_fn(name: &str, args: &str) -> Result<Value, Box<dyn std::error::Error>> {
-    #[allow(clippy::type_complexity)]
-    let mut available_functions: HashMap<&str, fn(&str, &str, &str) -> serde_json::Value> =
-        HashMap::new();
-    available_functions.insert("add_to_calendar_absolute", add_to_calendar_abs);
-
-    //println!("CALLED!!!!!!!!");
-
-    match name {
-        "add_to_calendar_absolute" => {
-            let function_args: serde_json::Value = args.parse().unwrap();
-            let date_ = function_args["date"].as_str().unwrap();
-            let time_ = function_args["time"].as_str().unwrap_or("00:00");
-            let entry = function_args["entry"].as_str().unwrap();
-            let val = add_to_calendar_abs(date_, time_, entry);
-            println!("RESPONSE: {val:?}");
-            Ok(val)
-        }
-        "add_to_calendar_relative" => {
-            let function_args: serde_json::Value = args.parse().unwrap();
-            let in_days = match function_args["in_days"].as_i64() {
-                Some(days) => Some(days),
-                None => {
-                    // attempt to parse as a string
-                    let days = function_args["in_days"]
-                        .as_str()
-                        .map(|s| s.parse().unwrap_or(0));
-                    days
-                }
-            };
-            let in_weeks = match function_args["in_weeks"].as_i64() {
-                Some(weeks) => Some(weeks),
-                None => {
-                    // attempt to parse as a string
-                    let weeks = function_args["in_weeks"]
-                        .as_str()
-                        .map(|s| s.parse().unwrap_or(0));
-                    weeks
-                }
-            };
-            let on_day = function_args["on_day"].as_str().map(|s| s.to_string());
-            let time_ = function_args["time"].as_str().unwrap_or("00:00");
-            let entry = function_args["entry"].as_str().unwrap_or("");
-            let val = add_to_calendar_rel(in_days, in_weeks, on_day, time_, entry);
-            //println!("RESPONSE: {val:?}");
-            Ok(val)
-        }
-        _ => {
-            println!("Unknown function: {}", name);
-            Ok(json!({}))
-        }
-    }
-}
-
-fn add_to_calendar_abs(date: &str, _time: &str, _entry: &str) -> serde_json::Value {
-    //let dt = format!("{date} {time}");
-    //let format = format_description!("[year]-[month]-[day] [hour]:[minute]");
-    //let dt = UtcDateTime::parse(&dt, &format).unwrap();
-    //let cal_entry = CalendarEntry {
-    //    datetime: dt,
-    //    entry: entry.to_string(),
-    //};
-    //println!("Adding {cal_entry:?}");
-
-    let entry_info = json!(date);
-    entry_info
-}
+//fn add_to_calendar_abs(a: AddToCalendarAbsolute) {
+//    dbg!(a);
+//}
 
 // add to calendar relative
-fn add_to_calendar_rel(
-    in_days: Option<i64>,
-    in_weeks: Option<i64>,
-    on_day: Option<String>,
-    time: &str,
-    _entry: &str,
-) -> serde_json::Value {
-    let mut dt = UtcDateTime::now();
 
-    match (in_days, in_weeks) {
-        (Some(days), Some(weeks)) => {
-            // for silly llm mistakes where is provides both in_days and in_weeks
-            if weeks * 7 == days {
-                dt = dt.checked_add(Duration::days(days)).unwrap();
-            }
-        }
-        (Some(days), None) => {
-            dt = dt.checked_add(Duration::days(days)).unwrap();
-        }
-        (None, Some(weeks)) => {
-            dt = dt.checked_add(Duration::weeks(weeks)).unwrap();
-        }
-        (None, None) => {}
-    }
+//fn add_to_calendar_rel(a: AddToCalendarRelative) {
+//    let mut dt = UtcDateTime::now();
 
-    // correct the day if necessary
-    if let Some(mut on_day) = on_day {
-        use std::str::FromStr;
-        //cleanup the string
-        on_day.retain(|c| !c.is_whitespace());
-        on_day.make_ascii_lowercase();
-        // set the first letter to uppercase
-        if let Some(first_letter) = on_day.chars().next() {
-            on_day.replace_range(0..1, &first_letter.to_string().to_uppercase());
-        }
+//match (a.in_days, a.in_weeks) {
+//    (Some(days), Some(weeks)) => {
+//        // for silly llm mistakes where is provides both in_days and in_weeks
+//        if weeks * 7 == days {
+//            dt = dt.checked_add(Duration::days(days)).unwrap();
+//        }
+//    }
+//    (Some(days), None) => {
+//        dt = dt.checked_add(Duration::days(days)).unwrap();
+//    }
+//    (None, Some(weeks)) => {
+//        dt = dt.checked_add(Duration::weeks(weeks)).unwrap();
+//    }
+//    (None, None) => {}
+//}
 
-        // remove the final letter if it is 's'
-        if on_day.ends_with("s") {
-            on_day.pop();
-        }
+// correct the day if necessary
+//if let Some(on_day) = a.on_day {
+//    if let Ok(on_day) = Weekday::from_str(&on_day) {
+//        let existing_day = dt.weekday();
+//        if existing_day != on_day {
+//            let days_to_add = on_day.number_days_from_sunday() as i8
+//                - existing_day.number_days_from_sunday() as i8;
+//            dt = dt.checked_add(Duration::days(days_to_add as i64)).unwrap();
+//        }
+//    }
+//    if on_day == "Tomorrow" {
+//        dt = UtcDateTime::now();
+//        dt = dt.checked_add(Duration::days(1)).unwrap();
+//    }
+//    println!("ON_DAY: {on_day}");
+//}
 
-        let on_day = match on_day.as_str() {
-            "Mon" => "Monday",
-            "Tue" => "Tuesday",
-            "Tues" => "Tuesday",
-            "Wed" => "Wednesday",
-            "Wednessday" => "Wednesday",
-            "Thu" => "Thursday",
-            "Thur" => "Thursday",
-            "Fri" => "Friday",
-            "Sat" => "Saturday",
-            "Satur" => "Saturday",
-            "Sun" => "Sunday",
-            _ => on_day.as_str(),
-        };
-        if let Ok(on_day) = Weekday::from_str(on_day) {
-            let existing_day = dt.weekday();
-            if existing_day != on_day {
-                let days_to_add = on_day.number_days_from_sunday() as i8
-                    - existing_day.number_days_from_sunday() as i8;
-                dt = dt.checked_add(Duration::days(days_to_add as i64)).unwrap();
-            }
-        }
-        if on_day == "tomorrow" || on_day == "Tomorrow" {
-            dt = UtcDateTime::now();
-            dt = dt.checked_add(Duration::days(1)).unwrap();
-        }
-        //println!("ON_DAY: {on_day}");
-    }
+// parse the time from the user input
+//let format = format_description!("[hour]:[minute]");
+//let dt = if let Ok(time_) = Time::parse(a.time, &format) {
+//    // replace the time with the parsed time
+//    dt.replace_time(time_)
+//} else {
+//    dt
+//};
 
-    // parse the time from the user input
-    let format = format_description!("[hour]:[minute]");
-    let dt = if let Ok(time_) = Time::parse(time, &format) {
-        // replace the time with the parsed time
-        dt.replace_time(time_)
-    } else {
-        dt
-    };
-
-    //let cal_entry = CalendarEntry {
-    //    datetime: dt,
-    //    entry: entry.to_string(),
-    //};
-    //println!("Adding {cal_entry:?}");
-
-    let date_format = format_description!("[year]-[month]-[day]");
-
-    let entry_info = json!(dt.format(date_format).unwrap());
-    entry_info
-}
-
-//fn get_current_weather(location: &str, unit: &str) -> serde_json::Value {
-//    let mut rng = thread_rng();
-
-//    let temperature: i32 = rng.gen_range(20..=55);
-
-//    let forecasts = [
-//        "sunny", "cloudy", "overcast", "rainy", "windy", "foggy", "snowy",
-//    ];
-
-//    let forecast = forecasts.choose(&mut rng).unwrap_or(&"sunny");
-
-//    let weather_info = json!({
-//        "location": location,
-//        "temperature": temperature.to_string(),
-//        "unit": unit,
-//        "forecast": forecast
-//    });
-
-//    weather_info
+//    let date_format = format_description!("[year]-[month]-[day]");
+//    let entry_info = json!(dt.format(date_format).unwrap());
+//    dbg!(&entry_info);
 //}

@@ -4,13 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-async-openai = "0.29.0"
+#async-openai = "0.29.0"
 futures = "0.3.31"
-ollama-rs = {version = "0.3.2", features = ["macros"]}
 rand = "0.8.5"
-#ollama-rs-macros = "0.3.2"
-schemars = { version = "1.0.0", features = ["preserve_order"] }
-serde = "1.0.219"
-serde_json = "1.0.140"
-time = {version = "0.3.41", features = ["parsing", "macros", "formatting"]}
+time = {version = "0.3.41", features = ["parsing", "macros", "formatting", "local-offset"]}
 tokio = { version = "1.45.1", features = ["full"] }
+
+ollama-rs = {version = "0.3.2", features = ["macros"]}
+schemars = { version = "1.0.4", features = ["preserve_order"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
