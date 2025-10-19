@@ -5,6 +5,9 @@ TROUBLE PROMPTS:
 - TUI Calendar 
   - MINI TUI Overview
      - basically the notifications window but with some intractability
+  - shared calendars via git repo's - auto-push
+     - easily make notes on calendar entries "DONE" - maybe through TODO list?
+  - TODO list integration
   - Month View
   - Mini Editor
      - manually adding a new entry
@@ -19,15 +22,6 @@ TROUBLE PROMPTS:
       notifications or on their calendar time (mediation timer, bot to perform
       a task for you)
 
-  - probably build to sync with SimpleCalendar https://github.com/SimpleMobileTools/Simple-Calendar
-    - OR maybe https://github.com/FossifyOrg/Calendar?
-    - (ProtonCalendar doesn't have an API)
-    - would need to run a CalDav server? https://github.com/jelmer/xandikos
-
-  - send notifications with https://github.com/hoodie/notify-rust
-    - would require a daemon of some kind... annoying to setup / install
-      - https://docs.rs/daemonize/latest/daemonize/
-    - maybe not, def optional, not super interested personally I think
   - HLM (Heuristic Language Model) integration 
     "tcal sports team general meeting 5pm next friday" 
        - get llamda to get determine the date based on the current date and the
@@ -36,6 +30,13 @@ TROUBLE PROMPTS:
        - calendar color / which calendar to add it to (or default calendar)
        - determine location and time
        - determine other guests and email them invites (optional) 
+
+  - probably build to sync with SimpleCalendar https://github.com/SimpleMobileTools/Simple-Calendar
+    - OR maybe https://github.com/FossifyOrg/Calendar?
+    - (ProtonCalendar doesn't have an API)
+    - would need to run a CalDav server? https://github.com/jelmer/xandikos
+    - custom sync to repo?
+    - build tcal as android app?
 
 - Heuristic Language Model (HLM)
    - a library AND a binary

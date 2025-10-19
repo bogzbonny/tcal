@@ -261,10 +261,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //let model = "llama3.2:latest".to_string();
     //let model = "phi3.5".to_string();
     //let model = "deepseek-r1:8b".to_string();
-    //let model = "gpt-oss:20b".to_string();
+    let model = "gpt-oss:20b".to_string();
     //let model = "qwen3:1.7b".to_string(); // too small!
     //let model = "qwen3:4b".to_string();
-    let model = "qwen3:8b".to_string();
+    //let model = "qwen3:8b".to_string();
 
     // compile all the arguments into a single string
     let mut input: Vec<String> = std::env::args().collect();
@@ -370,6 +370,9 @@ async fn process<S: Clone + Default + Debug + PartialEq + for<'a> Deserialize<'a
             )
             .await?
         };
+        if verbose {
+            dbg!(&res.response);
+        }
         let resp: S = serde_json::from_str(&res.response)?;
         if verbose {
             dbg!(&resp);
